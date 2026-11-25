@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roofline"
+version = "0.1.0"
+description = "Fit verdict for a HuggingFace model on the machine you're running on."
+requires-python = ">=3.10"
+dependencies = [
+    "psutil",
+    "huggingface_hub",
+]
+
+[project.optional-dependencies]
+gpu = ["nvidia-ml-py"]
+dev = ["pytest"]
+
+[project.scripts]
+roofline = "roofline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
