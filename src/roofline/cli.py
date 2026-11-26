@@ -6,6 +6,8 @@ import argparse
 import sys
 
 from roofline import __version__
+from roofline.config import ConfigError, find_config, parse_config, read_config
+from roofline.params import count_params
 
 
 def _nonneg_int(value: str) -> int:
@@ -61,13 +63,35 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    try:
+        path, source = find_config(args.model)
+        cfg = parse_config(read_config(path))
+    except ConfigError as e:
+        print(f"roofline: error: {e}", file=sys.stderr)
+        return 1
+    counts = count_params(cfg)
+
     print(f"roofline {__version__}")
-    print(f"  model:     {args.model}")
-    print(f"  overrides: gpus={args.gpus} vram={args.vram} ram={args.ram}")
-    print(f"  workload:  batch={args.batch} seq={args.seq} lora_rank={args.lora_rank}")
-    print(f"  json:      {args.json}")
+    print(f"  model:  {args.model}")
+    print(f"  config: {source} ({path})")
     print()
-    for stage in ("model analysis", "memory scenarios", "environment detection", "verdict"):
+    print("Model config")
+    print(f"  L={cfg.L}  D={cfg.D}  F={cfg.F}  N={cfg.N}  K={cfg.K}  H={cfg.H}  V={cfg.V}")
+    print(f"  tied embeddings: {'yes' if cfg.tied else 'no'}")
+    for note in cfg.notes:
+        print(f"  note: {note}")
+    print()
+    print("Parameters")
+    for label, n in (
+        ("FFW", counts.ffw),
+        ("Attention", counts.attention),
+        ("Vocab", counts.vocab),
+        ("Total", counts.total),
+    ):
+        share = 100 * n / counts.total
+        print(f"  {label:<10} {n:>18,}  {n / 1e9:8.2f}e9  {share:5.1f}%")
+    print()
+    for stage in ("memory scenarios", "environment detection", "verdict"):
         print(f"  [{stage}] not implemented yet")
     return 0
 

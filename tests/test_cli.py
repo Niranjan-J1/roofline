@@ -1,6 +1,9 @@
+import json
+
 import pytest
 
 from roofline.cli import build_parser, main
+from test_params import LLAMA_70B
 
 
 def test_defaults():
@@ -33,6 +36,15 @@ def test_allows_zero_gpus():
     assert build_parser().parse_args(["m", "--gpus", "0"]).gpus == 0
 
 
-def test_main_runs(capsys):
-    assert main(["some/model"]) == 0
-    assert "some/model" in capsys.readouterr().out
+def test_main_prints_breakdown(tmp_path, capsys):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(LLAMA_70B))
+    assert main([str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "local file" in out
+    assert "70.55e9" in out
+
+
+def test_main_reports_config_errors(tmp_path, capsys):
+    assert main([str(tmp_path / "nope.json")]) == 1
+    assert "config file not found" in capsys.readouterr().err
