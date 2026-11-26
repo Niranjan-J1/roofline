@@ -10,7 +10,8 @@ def test_defaults():
     args = build_parser().parse_args(["some/model"])
     assert args.model == "some/model"
     assert args.gpus is None and args.vram is None and args.ram is None
-    assert args.batch == 1 and args.seq == 4096 and args.lora_rank == 16
+    assert args.batch is None and args.seq is None and args.lora_rank is None
+    assert args.memory is False and args.fit is False
     assert args.json is False
 
 
@@ -43,6 +44,32 @@ def test_main_prints_breakdown(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "local file" in out
     assert "70.55e9" in out
+
+
+def run_main(tmp_path, capsys, *flags):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(LLAMA_70B))
+    assert main([str(path), *flags]) == 0
+    return capsys.readouterr()
+
+
+def test_default_output_is_analysis_only(tmp_path, capsys):
+    out = run_main(tmp_path, capsys).out
+    for heading in ("Overview", "Parameters", "For testing", "For post-training"):
+        assert heading in out
+    assert "Memory estimates" not in out
+
+
+@pytest.mark.parametrize(
+    "flags", [["--memory"], ["--batch", "1"], ["--seq", "64"], ["--lora-rank", "8"]]
+)
+def test_memory_flags_add_estimates(tmp_path, capsys, flags):
+    assert "Memory estimates" in run_main(tmp_path, capsys, *flags).out
+
+
+@pytest.mark.parametrize("flags", [["--fit"], ["--gpus", "0"], ["--ram", "8"]])
+def test_fit_flags_say_not_available(tmp_path, capsys, flags):
+    assert "not available yet" in run_main(tmp_path, capsys, *flags).err
 
 
 def test_main_reports_config_errors(tmp_path, capsys):

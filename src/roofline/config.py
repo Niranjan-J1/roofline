@@ -23,7 +23,7 @@ from huggingface_hub.errors import (
 CONFIG_NAME = "config.json"
 
 # Keys that signal a mixture-of-experts model.
-_MOE_KEYS = ("num_experts", "num_local_experts", "n_routed_experts")
+MOE_KEYS = ("num_experts", "num_local_experts", "n_routed_experts")
 
 
 class ConfigError(Exception):
@@ -117,14 +117,19 @@ def _positive_int(cfg: dict, key: str) -> int:
     return value
 
 
+def dimension_source(raw: dict) -> dict:
+    """The dict holding the model dimensions: top level, or a nested text_config."""
+    nested = raw.get("text_config")
+    if "num_hidden_layers" not in raw and isinstance(nested, dict):
+        return nested
+    return raw
+
+
 def parse_config(raw: dict) -> ModelConfig:
     """Map a raw config dict to the symbols used by the parameter formulas."""
     notes: list[str] = []
-    cfg = raw
-
-    nested = raw.get("text_config")
-    if "num_hidden_layers" not in raw and isinstance(nested, dict):
-        cfg = nested
+    cfg = dimension_source(raw)
+    if cfg is not raw:
         notes.append("model dimensions read from nested text_config (text model only)")
 
     L = _positive_int(cfg, "num_hidden_layers")
@@ -155,7 +160,7 @@ def parse_config(raw: dict) -> ModelConfig:
         tied = False
         notes.append("tie_word_embeddings missing, assumed false (2 vocab matrices)")
 
-    if any(cfg.get(key) for key in _MOE_KEYS):
+    if any(cfg.get(key) for key in MOE_KEYS):
         notes.append(
             "WARNING: this looks like a mixture-of-experts model; the dense FFW "
             "formula does not count experts, so these totals are not reliable"

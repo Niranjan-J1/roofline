@@ -1,20 +1,27 @@
 # roofline
 
-A CLI tool that analyzes a HuggingFace model config and prints a "fit verdict" for the
-machine it's running on: given a model, can this hardware load it, finetune it, or train it,
-and if not, what would it take?
+A CLI tool that analyzes a HuggingFace model config for researchers, engineers and
+developers: what the model is, and what to watch for when testing or post-training it.
+Memory estimates and a hardware fit verdict are optional extras.
 
 ## What it does
 
-Input: a HuggingFace model (repo name, local path, or a `config.json`).
-Output: a model analysis + an environment-aware fit verdict.
+Input: a HuggingFace model (repo name, local path, or a `config.json`). Only `config.json`
+is read or downloaded, never weights.
 
-Two halves:
+| command                    | output                                                        |
+|----------------------------|---------------------------------------------------------------|
+| `roofline <model>`         | model analysis (the main feature)                             |
+| `roofline <model> --memory`| + memory estimates (`--batch`/`--seq`/`--lora-rank` imply it) |
+| `roofline <model> --fit`   | + memory, detected hardware and fit verdicts (not built yet)  |
 
-1. **Model analysis** (from the config).
-2. **Environment detection** (what hardware the command is running on).
+The default analysis covers: overview, warnings, parameter breakdown and derived figures,
+things to check for testing and for post-training, the other config settings as written,
+and what cannot be determined from `config.json`.
 
-Then it compares the two and prints a per-scenario ✓/✗ verdict with one line of reasoning each.
+Rules for analysis items: each comes from a config value or a calculation from one. Never
+guess; say when something is not stated. A setting not found is not proof of absence.
+Config values are untrusted text and must be sanitized before printing.
 
 ## Config key mapping
 
@@ -62,7 +69,7 @@ Bytes per parameter:
 Always flag which component dominates, and label time/sharding/MFU outputs as idealized
 roofline estimates, not guarantees.
 
-## Environment detection (no user input required)
+## Environment detection (optional, under --fit; no user input required)
 
 - GPUs present + VRAM: pynvml, falling back to parsing `nvidia-smi`.
 - Total system RAM: psutil.
@@ -71,7 +78,7 @@ roofline estimates, not guarantees.
 - No CUDA devices → report CPU-only clearly.
 - If a value can't be detected, say so and state the assumption; allow override via flags.
 
-## Verdict
+## Verdict (optional, under --fit)
 
 For each of {inference, LoRA, full training}: does it fit on the detected hardware?
 If not, how many devices would it need, and what sharding strategy (e.g. FSDP / ZeRO-3
@@ -86,15 +93,18 @@ across available GPUs)? Print a clear ✓/✗ per scenario with one line of reas
 - `--vram GB`    override detected per-GPU VRAM
 - `--ram GB`     override detected system RAM
 - `--json`       machine-readable output
+- `--memory`     add memory estimates
+- `--fit`        add hardware detection and fit verdicts
 - (defaults should let it run with just a model name)
 
 ## How to work in this repo
 
 - **Plan before coding.** For any non-trivial change, propose a plan and wait for approval.
 - **Work in buckets, one at a time.** Suggested order: (1) scaffold + CLI skeleton,
-  (2) config parsing + param math, (3) memory scenarios, (4) environment detection,
-  (5) verdict + recommendations, (6) --json + polish. After each bucket, run the relevant
-  check, show the result, and stop for go-ahead before the next.
+  (2) config parsing + param math, (3) memory scenarios, (4) model insights,
+  (5) environment detection, (6) verdict + recommendations, (7) --json + polish.
+  After each bucket, run the relevant check, show the result, and stop for go-ahead
+  before the next.
 - **Commit and push at each completed bucket (milestone).** Keep commits scoped to one bucket.
 - Verify against the LLaMA-3-70B anchor whenever the param math changes.
 
