@@ -50,10 +50,14 @@ attention where K < N, and `4D²` would overcount attention badly.
 ## Memory scenarios
 
 Bytes per parameter:
-- **Inference (bf16)**: 2 bytes/param
-- **LoRA finetune**: base weights (2 bytes/param) + small adapter/optimizer overhead
-- **Full training (Adam)**: 10 bytes/param (2 bf16 weights + 4 fp32 first moment + 4 fp32 second moment),
-  PLUS activation memory, which scales with batch × layers × D and dominates at large batch.
+- **Inference (bf16)**: 2 bytes/param, plus the KV cache (4 · L · K · H · batch · seq bytes),
+  included in the total and shown separately.
+- **LoRA finetune**: base weights (2 bytes/param) + 12 bytes per adapter param + activations.
+  Adapters on q, k, v, o only.
+- **Full training (Adam)**: 12 bytes/param (2 bf16 weights + 2 bf16 gradients + 4 fp32 first
+  moment + 4 fp32 second moment), PLUS activation memory.
+- **Activations** (rough, unmeasured estimate): 2 · batch · seq · L · (5D + 3F) bytes, with no
+  gradient checkpointing. Dominates at large batch.
 
 Always flag which component dominates, and label time/sharding/MFU outputs as idealized
 roofline estimates, not guarantees.

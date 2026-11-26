@@ -7,6 +7,7 @@ import sys
 
 from roofline import __version__
 from roofline.config import ConfigError, find_config, parse_config, read_config
+from roofline.memory import ASSUMPTIONS, GB, memory_scenarios
 from roofline.params import count_params
 
 
@@ -91,7 +92,21 @@ def main(argv: list[str] | None = None) -> int:
         share = 100 * n / counts.total
         print(f"  {label:<10} {n:>18,}  {n / 1e9:8.2f}e9  {share:5.1f}%")
     print()
-    for stage in ("memory scenarios", "environment detection", "verdict"):
+    print(
+        f"Memory estimates (batch={args.batch}, seq={args.seq}, "
+        f"lora_rank={args.lora_rank}; 1 GB = 1e9 bytes)"
+    )
+    for s in memory_scenarios(cfg, args.batch, args.seq, args.lora_rank):
+        print(f"  {s.label:<30} {s.total / GB:>10,.2f} GB")
+        for part in s.components:
+            marker = "  <- dominates" if part == s.dominant else ""
+            print(f"    {part.name:<28} {part.bytes / GB:>10,.2f} GB{marker}")
+    print()
+    print("Assumptions")
+    for line in ASSUMPTIONS:
+        print(f"  - {line}")
+    print()
+    for stage in ("environment detection", "verdict"):
         print(f"  [{stage}] not implemented yet")
     return 0
 

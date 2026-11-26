@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
+
+# Hide the Windows symlink notice, which is noise for a single small file.
+# Must be set before huggingface_hub is imported. Errors are unaffected.
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 from huggingface_hub import hf_hub_download, try_to_load_from_cache
 from huggingface_hub.errors import (
