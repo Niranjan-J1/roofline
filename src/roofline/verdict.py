@@ -1,1 +1,1 @@
-"""Per-scenario fit verdicts and sharding recommendations (bucket 5)."""
+"""Per-scenario fit verdicts and sharding recommendations (not built yet)."""

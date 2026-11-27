@@ -330,7 +330,7 @@ def _token_item(view: dict) -> Item:
     if isinstance(eos, list) and len(eos) > 1:
         parts.append("There are several end IDs; check that generation stops on each.")
     if pad is None:
-        parts.append("No padding token ID is listed here.")
+        parts.append("The config lists no pad ID; the tokenizer may define one.")
     elif pad == eos:
         parts.append("Padding and end share an ID.")
     parts.append(
@@ -338,21 +338,17 @@ def _token_item(view: dict) -> Item:
         "also hide the real end token from the training loss."
     )
     issues = []
-    if pad is None:
-        issues.append("no pad ID in config")
-    elif pad == eos:
-        issues.append("pad = end ID")
-    if bos is not None and bos == eos:
-        issues.append("start = end ID")
-    if isinstance(eos, list) and len(eos) > 1:
-        issues.append("several end IDs")
-    short = None
     if not found:
-        short = "No token IDs in config. Check the tokenizer."
-    elif issues:
-        joined = "; ".join(issues)
-        short = f"{joined[0].upper()}{joined[1:]}. Check tokenizer and loss mask."
-    return Item("Special tokens", " ".join(parts), short)
+        issues.append("Config lists no token IDs: check the tokenizer's.")
+    elif pad is None:
+        issues.append("Config lists no pad ID: check the tokenizer's.")
+    elif pad == eos:
+        issues.append("Pad = end ID: check the loss mask.")
+    if bos is not None and bos == eos:
+        issues.append("Start = end ID.")
+    if isinstance(eos, list) and len(eos) > 1:
+        issues.append("Several end IDs: check generation stops on each.")
+    return Item("Special tokens", " ".join(parts), " ".join(issues) or None)
 
 
 def _post_training(

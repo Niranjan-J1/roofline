@@ -1,4 +1,4 @@
-"""Load a HuggingFace config and map it to L/D/F/N/K/H/V (bucket 2)."""
+"""Load a HuggingFace config and map it to L/D/F/N/K/H/V."""
 
 from __future__ import annotations
 

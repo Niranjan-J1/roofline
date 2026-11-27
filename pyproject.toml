@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "roofline"
 version = "0.1.0"
-description = "Fit verdict for a HuggingFace model on the machine you're running on."
+description = "Quick analysis of a HuggingFace model config: parameters, memory and things to check."
 requires-python = ">=3.10"
 dependencies = [
     "psutil",

@@ -1,4 +1,4 @@
-"""Parameter counts: FFW, attention (GQA-aware), vocab (bucket 2)."""
+"""Parameter counts: FFW, attention (GQA-aware), vocab."""
 
 from __future__ import annotations
 

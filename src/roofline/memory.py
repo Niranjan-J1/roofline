@@ -1,4 +1,4 @@
-"""Memory scenarios: inference, LoRA finetune, full training (bucket 3).
+"""Memory scenarios: inference, LoRA finetune, full training.
 
 All results are idealized estimates in bytes. Framework overhead, temporary
 buffers and fragmentation are not counted, so real usage is higher.
