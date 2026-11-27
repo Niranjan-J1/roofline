@@ -7,7 +7,8 @@ from pathlib import Path
 
 from roofline import __version__
 from roofline.config import ModelConfig
-from roofline.insights import UNAVAILABLE, Analysis, Item
+from roofline.env import SCOPE_NOTE, Hardware, Slurm
+from roofline.insights import UNAVAILABLE, Analysis, Item, safe_text
 from roofline.memory import ASSUMPTIONS, GB, Scenario
 from roofline.params import ParamCounts
 
@@ -179,4 +180,96 @@ def render_memory(
             lines.append(f"    {part.name:<28} {part.bytes / GB:>10,.2f} GB{marker}")
     lines += ["", "Memory assumptions"]
     lines += [_wrap(a, "  - ", "    ") for a in ASSUMPTIONS]
+    return "\n".join(lines)
+
+
+def _gb(value: int) -> str:
+    return f"{value / GB:,.2f} GB"
+
+
+def _gpu_summary(h: Hardware) -> str:
+    if h.gpu_count is None:
+        return "count unknown (see warnings); pass --gpus to set it"
+    if h.gpu_count == 0:
+        if h.gpu_count_source == "override":
+            return "0 (override); CPU-only"
+        if h.probe.status == "unavailable":
+            return (
+                f"no NVIDIA GPU detected ({safe_text(h.probe.detail)}); "
+                "assuming CPU-only"
+            )
+        if h.probe.gpus:
+            return "none visible (hidden by CUDA_VISIBLE_DEVICES); CPU-only"
+        return f"no NVIDIA GPUs found by {h.probe.detail}; CPU-only"
+    text = f"{h.gpu_count} total"
+    if h.gpu_count_source == "override":
+        text += " (override)"
+    else:
+        names = sorted({g.name for g in h.visible})
+        text += f": {safe_text(names[0]) if len(names) == 1 else 'mixed NVIDIA GPUs'}"
+    if h.vram_bytes is None:
+        return f"{text}, memory unknown"
+    text += f", {_gb(h.vram_bytes)} each ({h.vram_source})"
+    free = [g.free_bytes for g in h.visible if g.free_bytes is not None]
+    if free and h.vram_source == "detected":
+        text += f", lowest free {_gb(min(free))}"
+    return text
+
+
+def _ram_summary(h: Hardware) -> str:
+    if h.ram_total_bytes is None:
+        return "unknown"
+    if h.ram_source == "override":
+        return f"{_gb(h.ram_total_bytes)} per node (override)"
+    text = f"{_gb(h.ram_total_bytes)} total"
+    if h.ram_available_bytes is not None:
+        text += f", {_gb(h.ram_available_bytes)} available"
+    return text
+
+
+def _slurm_summary(s: Slurm) -> str:
+    def known(value: int | None) -> str:
+        return "unknown" if value is None else str(value)
+
+    text = (
+        f"job {safe_text(s.job_id, 20)}: nodes {known(s.nodes)}, "
+        f"tasks {known(s.tasks)}, GPUs on this node {known(s.gpus_on_node)}"
+    )
+    if s.mem_per_node_bytes is not None:
+        text += f", memory limit {_gb(s.mem_per_node_bytes)} per node"
+    return text
+
+
+def render_hardware(h: Hardware, full: bool) -> str:
+    def row(label: str, text: str) -> str:
+        return _wrap(text, f"  {label:<7}", " " * 9, SHORT_WIDTH)
+
+    lines = [
+        "Hardware (this machine)",
+        row("GPUs", _gpu_summary(h)),
+        row("RAM", _ram_summary(h)),
+    ]
+    if h.slurm:
+        lines.append(row("Slurm", _slurm_summary(h.slurm)))
+    lines += [_wrap(w, "  ! ", "    ", SHORT_WIDTH) for w in h.warnings]
+    if full:
+        lines += ["", "Hardware details"]
+        check = f"{h.probe.status}: {safe_text(h.probe.detail, 200)}"
+        lines.append(row("Check", check))
+        for g in h.probe.gpus:
+            total = _gb(g.total_bytes) if g.total_bytes is not None else "unknown"
+            free = _gb(g.free_bytes) if g.free_bytes is not None else "unknown"
+            seen = "visible" if g in h.visible else "not confirmed visible"
+            mig = ", MIG on" if g.mig else ""
+            text = f"{safe_text(g.name)}: {total} total, {free} free, {seen}{mig}"
+            lines.append(row(f"GPU {g.index}", text))
+        if h.cuda_visible_devices is not None:
+            lines.append(f"  CUDA_VISIBLE_DEVICES={safe_text(h.cuda_visible_devices)}")
+        if h.slurm:
+            lines += [f"  {k}={safe_text(v)}" for k, v in h.slurm.variables]
+        else:
+            lines.append(row("Slurm", "no job detected"))
+        lines.append(row("RAM", f"source: {h.ram_source or 'not detected'}"))
+        lines.append(_wrap(SCOPE_NOTE, "  ", "  ", SHORT_WIDTH))
+    lines.append("Fit verdicts are not available yet.")
     return "\n".join(lines)

@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from roofline import env
 from roofline.cli import build_parser, main
 from test_params import LLAMA_70B
 
@@ -109,9 +110,29 @@ def test_short_view_shows_important_assumptions(tmp_path, capsys):
     assert "head_dim missing" not in out
 
 
-@pytest.mark.parametrize("flags", [["--fit"], ["--gpus", "0"], ["--ram", "8"]])
-def test_fit_flags_say_not_available(tmp_path, capsys, flags):
-    assert "not available yet" in run_main(tmp_path, capsys, *flags).err
+@pytest.mark.parametrize(
+    "flags", [["--fit"], ["--gpus", "0"], ["--vram", "80"], ["--ram", "8"]]
+)
+def test_hardware_flags_add_memory_and_hardware(tmp_path, capsys, monkeypatch, flags):
+    monkeypatch.setattr(env, "probe_gpus", lambda: env.Probe("unavailable", "test"))
+    out = run_main(tmp_path, capsys, *flags).out
+    assert "Memory (batch=" in out and "Hardware (this machine)" in out
+    assert "Fit verdicts are not available yet." in out
+
+
+@pytest.mark.parametrize("flags", [[], ["--full"], ["--memory"]])
+def test_hardware_is_not_detected_unless_asked(tmp_path, capsys, monkeypatch, flags):
+    def fail():
+        raise AssertionError("hardware detection ran")
+
+    monkeypatch.setattr(env, "probe_gpus", fail)
+    assert "Hardware (this machine)" not in run_main(tmp_path, capsys, *flags).out
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-1"])
+def test_rejects_non_finite_memory(value):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["m", "--ram", value])
 
 
 def test_main_reports_config_errors(tmp_path, capsys):

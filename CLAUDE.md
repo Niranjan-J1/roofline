@@ -14,7 +14,7 @@ is read or downloaded, never weights.
 | `roofline <model>`         | short model analysis, about one screen (the main feature)     |
 | `roofline <model> --full`  | all details                                                   |
 | `roofline <model> --memory`| + memory totals (`--batch`/`--seq`/`--lora-rank` imply it)    |
-| `roofline <model> --fit`   | + memory, detected hardware and fit verdicts (not built yet)  |
+| `roofline <model> --fit`   | + memory and detected hardware (fit verdicts not built yet)   |
 
 **Keep the default short** (about 15 lines for a typical model). It shows key facts,
 every warning, assumptions that affect the numbers, and "worth checking" items only when
@@ -80,7 +80,11 @@ roofline estimates, not guarantees.
 - Total system RAM: psutil.
 - Slurm allocation: read SLURM_* env vars (SLURM_JOB_ID, SLURM_NNODES, SLURM_GPUS_ON_NODE,
   SLURM_NTASKS, etc.).
-- No CUDA devices → report CPU-only clearly.
+- No CUDA devices → report CPU-only clearly. Distinguish "none found" from "check failed".
+- Respect CUDA_VISIBLE_DEVICES; if it can't be matched reliably (e.g. MIG), say so.
+- Direct detection sees one node. A multi-node Slurm total is labeled as assuming
+  identical nodes. Mixed GPUs: use the smallest VRAM.
+- Runs only under --fit (hardware flags imply it). Detection never crashes the analysis.
 - If a value can't be detected, say so and state the assumption; allow override via flags.
 
 ## Verdict (optional, under --fit)
@@ -94,13 +98,14 @@ across available GPUs)? Print a clear ✓/✗ per scenario with one line of reas
 
 ## Flags
 
-- `--gpus N`     override detected GPU count
-- `--vram GB`    override detected per-GPU VRAM
-- `--ram GB`     override detected system RAM
+- `--gpus N`     override GPU count (total across all nodes)
+- `--vram GB`    override per-GPU VRAM
+- `--ram GB`     override system RAM per node
+                 (1 GB = 1e9 bytes everywhere)
 - `--json`       machine-readable output
 - `--memory`     add memory estimates
 - `--full`       show all details
-- `--fit`        add hardware detection and fit verdicts
+- `--fit`        add memory, hardware detection and (later) fit verdicts
 - (defaults should let it run with just a model name)
 
 ## How to work in this repo

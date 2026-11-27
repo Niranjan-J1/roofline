@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 
 from roofline import __version__
 from roofline.config import ConfigError, find_config, parse_config, read_config
+from roofline.env import detect_hardware
 from roofline.insights import analyze
 from roofline.memory import memory_scenarios
 from roofline.params import count_params
 from roofline.report import (
     render_analysis,
+    render_hardware,
     render_memory,
     render_short,
     render_short_memory,
@@ -36,7 +39,7 @@ def _positive_int(value: str) -> int:
 
 def _positive_float(value: str) -> float:
     x = float(value)
-    if x <= 0:
+    if not (math.isfinite(x) and x > 0):  # also rejects nan and inf
         raise argparse.ArgumentTypeError(f"must be > 0, got {value}")
     return x
 
@@ -83,11 +86,32 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"LoRA rank (default: {DEFAULT_LORA_RANK}); implies --memory",
     )
 
-    hw = p.add_argument_group("hardware fit (not available yet)")
-    hw.add_argument("--fit", action="store_true", help="check the model against this machine")
-    hw.add_argument("--gpus",type=_nonneg_int, metavar="N", help="override detected GPU count")
-    hw.add_argument("--vram", type=_positive_float, metavar="GB", help="override detected per-GPU VRAM in GB")
-    hw.add_argument("--ram", type=_positive_float, metavar="GB", help="override detected system RAM in GB")
+    hw = p.add_argument_group(
+        "hardware (optional; 1 GB = 1e9 bytes, so a '24 GB' card is about 25.8)"
+    )
+    hw.add_argument(
+        "--fit",
+        action="store_true",
+        help="show memory estimates and this machine's hardware (no verdicts yet)",
+    )
+    hw.add_argument(
+        "--gpus",
+        type=_nonneg_int,
+        metavar="N",
+        help="total GPUs across all nodes; implies --fit",
+    )
+    hw.add_argument(
+        "--vram",
+        type=_positive_float,
+        metavar="GB",
+        help="memory per GPU; implies --fit",
+    )
+    hw.add_argument(
+        "--ram",
+        type=_positive_float,
+        metavar="GB",
+        help="system RAM per node; implies --fit",
+    )
 
     p.add_argument("--json", action="store_true", help="JSON output (not available yet)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -107,7 +131,11 @@ def main(argv: list[str] | None = None) -> int:
     counts = count_params(cfg)
 
     workload = (args.batch, args.seq, args.lora_rank)
-    show_memory = args.memory or any(v is not None for v in workload)
+    overrides = (args.gpus, args.vram, args.ram)
+    show_hardware = args.fit or any(v is not None for v in overrides)
+    show_memory = (
+        args.memory or show_hardware or any(v is not None for v in workload)
+    )
     batch = args.batch or DEFAULT_BATCH
     seq = args.seq or DEFAULT_SEQ
     rank = args.lora_rank or DEFAULT_LORA_RANK
@@ -121,13 +149,14 @@ def main(argv: list[str] | None = None) -> int:
         render = render_memory if args.full else render_short_memory
         print()
         print(render(memory_scenarios(cfg, batch, seq, rank), batch, seq, rank))
+    if show_hardware:
+        hardware = detect_hardware(args.gpus, args.vram, args.ram)
+        print()
+        print(render_hardware(hardware, args.full))
     if not args.full:
         more = "--full" if show_memory else "--full   Memory: --memory"
         print(f"\nEstimates from config.json. More: {more}")
 
-    hardware = (args.gpus, args.vram, args.ram)
-    if args.fit or any(v is not None for v in hardware):
-        print("roofline: note: hardware fit is not available yet", file=sys.stderr)
     if args.json:
         print("roofline: note: --json is not available yet", file=sys.stderr)
     return 0
