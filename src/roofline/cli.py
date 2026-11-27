@@ -10,7 +10,12 @@ from roofline.config import ConfigError, find_config, parse_config, read_config
 from roofline.insights import analyze
 from roofline.memory import memory_scenarios
 from roofline.params import count_params
-from roofline.report import render_analysis, render_memory
+from roofline.report import (
+    render_analysis,
+    render_memory,
+    render_short,
+    render_short_memory,
+)
 
 DEFAULT_BATCH, DEFAULT_SEQ, DEFAULT_LORA_RANK = 1, 4096, 16
 
@@ -48,6 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
         "model",
         help="HuggingFace repo id (e.g. Qwen/Qwen2.5-0.5B), a local model directory, "
         "or a path to a config.json",
+    )
+
+    p.add_argument(
+        "--full",
+        action="store_true",
+        help="show all details (with --memory, the full memory breakdown)",
     )
 
     mem = p.add_argument_group("memory estimates (optional)")
@@ -102,10 +113,17 @@ def main(argv: list[str] | None = None) -> int:
     rank = args.lora_rank or DEFAULT_LORA_RANK
 
     analysis = analyze(raw, cfg, counts, rank)
-    print(render_analysis(args.model, source, path, cfg, counts, analysis))
+    if args.full:
+        print(render_analysis(args.model, source, path, cfg, counts, analysis))
+    else:
+        print(render_short(args.model, source, cfg, counts, analysis))
     if show_memory:
+        render = render_memory if args.full else render_short_memory
         print()
-        print(render_memory(memory_scenarios(cfg, batch, seq, rank), batch, seq, rank))
+        print(render(memory_scenarios(cfg, batch, seq, rank), batch, seq, rank))
+    if not args.full:
+        more = "--full" if show_memory else "--full   Memory: --memory"
+        print(f"\nEstimates from config.json. More: {more}")
 
     hardware = (args.gpus, args.vram, args.ram)
     if args.fit or any(v is not None for v in hardware):

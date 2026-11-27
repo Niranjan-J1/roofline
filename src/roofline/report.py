@@ -12,12 +12,16 @@ from roofline.memory import ASSUMPTIONS, GB, Scenario
 from roofline.params import ParamCounts
 
 WIDTH = 88
+SHORT_WIDTH = 80
+
+# Config assumptions that affect the numbers or their scope, so always shown.
+_IMPORTANT_NOTES = ("num_key_value_heads missing", "tie_word_embeddings missing", "text_config")
 
 
-def _wrap(text: str, first: str, rest: str) -> str:
+def _wrap(text: str, first: str, rest: str, width: int = WIDTH) -> str:
     return textwrap.fill(
         text,
-        width=WIDTH,
+        width=width,
         initial_indent=first,
         subsequent_indent=rest,
         break_long_words=False,
@@ -31,6 +35,84 @@ def _labelled(items: tuple[Item, ...]) -> list[str]:
 
 def _checks(items: tuple[Item, ...]) -> list[str]:
     return [_wrap(f"{i.title}: {i.text}", "  - ", "    ") for i in items]
+
+
+def render_short(
+    model: str, source: str, c: ModelConfig, counts: ParamCounts, a: Analysis
+) -> str:
+    """The default view: about one screen. Warnings are never dropped."""
+
+    def wrap(text: str, first: str, rest: str) -> str:
+        return _wrap(text, first, rest, SHORT_WIDTH)
+
+    kind = f"{a.architecture}, {a.dtype}" if a.dtype else a.architecture
+    total = counts.total
+    params = (
+        f"{total / 1e9:.2f}B" if total >= 1e9 else f"{total / 1e6:.2f}M"
+    )
+    split = (
+        f"FFW {100 * counts.ffw / total:.0f}%, "
+        f"attention {100 * counts.attention / total:.0f}%, "
+        f"vocab {100 * counts.vocab / total:.0f}%"
+    )
+    if c.K == c.N:
+        attention = f"multi-head: {c.N} heads, head size {c.H}"
+    else:
+        name = "multi-query" if c.K == 1 else "grouped-query"
+        attention = f"{name}: {c.N} query / {c.K} KV heads, head size {c.H}"
+    storage = " | ".join(
+        f"{label} {total * size / 1e9:,.1f} GB"
+        for label, size in (("bf16", 2), ("int8", 1), ("4-bit", 0.5))
+    )
+    facts = (
+        ("Params", f"{params} ({split})"),
+        ("Shape", f"{c.L} layers, hidden {c.D:,}, FFW {c.F:,}"),
+        ("Attention", attention),
+        ("Context", f"{a.context:,} position limit" if a.context else "not found"),
+        ("Weights", storage),
+    )
+
+    lines = [wrap(f"{model}   {kind}   (config: {source})", "", "  "), ""]
+    lines += [wrap(text, f"  {label:<11}", " " * 13) for label, text in facts]
+
+    if a.warnings:
+        lines += ["", "Warnings"]
+        lines += [wrap(w, "  ! ", "    ") for w in a.warnings]
+    notes = [n for n in c.notes if any(key in n for key in _IMPORTANT_NOTES)]
+    if notes:
+        lines += ["", "Assumed"]
+        lines += [wrap(n, "  ? ", "    ") for n in notes]
+
+    checks = [
+        (tag, item.short)
+        for tag, items in (("[train]", a.post_training), ("[test]", a.testing))
+        for item in items
+        if item.short
+    ]
+    if checks:
+        lines += ["", "Worth checking"]
+        lines += [wrap(text, f"  {tag:<8}", " " * 10) for tag, text in checks]
+    return "\n".join(lines)
+
+
+def render_short_memory(
+    scenarios: tuple[Scenario, ...], batch: int, seq: int, lora_rank: int
+) -> str:
+    lines = [f"Memory (batch={batch}, seq={seq}, LoRA rank={lora_rank}; 1 GB = 1e9 bytes)"]
+    lines += [
+        f"  {s.label:<22} {s.total / GB:>9,.2f} GB   largest: {s.dominant.name}"
+        for s in scenarios
+    ]
+    lines.append(
+        _wrap(
+            "Rough: no overhead or checkpointing; activations unmeasured; LoRA on "
+            "q/k/v/o.",
+            "  ",
+            "  ",
+            SHORT_WIDTH,
+        )
+    )
+    return "\n".join(lines)
 
 
 def render_analysis(

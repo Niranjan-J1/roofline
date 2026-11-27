@@ -11,13 +11,18 @@ is read or downloaded, never weights.
 
 | command                    | output                                                        |
 |----------------------------|---------------------------------------------------------------|
-| `roofline <model>`         | model analysis (the main feature)                             |
-| `roofline <model> --memory`| + memory estimates (`--batch`/`--seq`/`--lora-rank` imply it) |
+| `roofline <model>`         | short model analysis, about one screen (the main feature)     |
+| `roofline <model> --full`  | all details                                                   |
+| `roofline <model> --memory`| + memory totals (`--batch`/`--seq`/`--lora-rank` imply it)    |
 | `roofline <model> --fit`   | + memory, detected hardware and fit verdicts (not built yet)  |
 
-The default analysis covers: overview, warnings, parameter breakdown and derived figures,
-things to check for testing and for post-training, the other config settings as written,
-and what cannot be determined from `config.json`.
+**Keep the default short** (about 15 lines for a typical model). It shows key facts,
+every warning, assumptions that affect the numbers, and "worth checking" items only when
+something about this model calls for them. No generic advice. Never drop a warning to
+meet the length target. Everything else goes under `--full`: parameter breakdown and
+derived figures, all testing and post-training notes, other config settings as written,
+and what cannot be determined from `config.json`. `--memory --full` shows the memory
+breakdown and assumptions.
 
 Rules for analysis items: each comes from a config value or a calculation from one. Never
 guess; say when something is not stated. A setting not found is not proof of absence.
@@ -94,6 +99,7 @@ across available GPUs)? Print a clear ✓/✗ per scenario with one line of reas
 - `--ram GB`     override detected system RAM
 - `--json`       machine-readable output
 - `--memory`     add memory estimates
+- `--full`       show all details
 - `--fit`        add hardware detection and fit verdicts
 - (defaults should let it run with just a model name)
 

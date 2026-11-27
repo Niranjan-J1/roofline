@@ -43,6 +43,7 @@ UNAVAILABLE = (
 class Item:
     title: str
     text: str
+    short: str | None = None  # set only if this belongs in the short view
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,9 @@ class Analysis:
     testing: tuple[Item, ...]
     post_training: tuple[Item, ...]
     other_settings: tuple[tuple[str, str], ...]
+    architecture: str
+    dtype: str | None
+    context: int | None
 
 
 def safe_text(value: object, limit: int = 70) -> str:
@@ -255,15 +259,27 @@ def _testing(view: dict, c: ModelConfig) -> list[Item]:
         " Test quality at your target lengths; a position limit does not show how "
         "well the model performs there."
     )
-    items.append(Item("Long inputs", text))
+    short = None
+    if limit:
+        bound = "up to " if window and window[0] == "on" else ""
+        short = (
+            f"KV cache at full context: {bound}{per_token * limit / 1e9:,.2f} GB "
+            "per sequence (bf16)."
+        )
+    items.append(Item("Long inputs", text, short))
     if window:
         advice = (
             " Include inputs longer than the window in your tests."
             if window[0] == "on"
             else ""
         )
+        short = (
+            "Sliding-window attention is on. Test inputs longer than the window."
+            if window[0] == "on"
+            else None
+        )
         items.append(
-            Item("Sliding-window attention", f"{window[1].rstrip('.')}.{advice}")
+            Item("Sliding-window attention", f"{window[1].rstrip('.')}.{advice}", short)
         )
     scaling = _rope_scaling(view)
     if scaling:
@@ -272,6 +288,7 @@ def _testing(view: dict, c: ModelConfig) -> list[Item]:
                 "Position scaling",
                 f"The config uses '{scaling}' position (RoPE) scaling. Check that "
                 "your inference library supports it, and test long inputs.",
+                f"'{scaling}' RoPE scaling. Check library support; test long inputs.",
             )
         )
     dtype = view.get("torch_dtype") or view.get("dtype")
@@ -290,6 +307,7 @@ def _testing(view: dict, c: ModelConfig) -> list[Item]:
                 "Dropout",
                 f"attention_dropout is {dropout}. Make sure the model is in "
                 "evaluation mode when testing.",
+                f"attention_dropout is {dropout}. Test in evaluation mode.",
             )
         )
     return items
@@ -319,7 +337,22 @@ def _token_item(view: dict) -> Item:
         "Check these against the tokenizer, and make sure masking padding does not "
         "also hide the real end token from the training loss."
     )
-    return Item("Special tokens", " ".join(parts))
+    issues = []
+    if pad is None:
+        issues.append("no pad ID in config")
+    elif pad == eos:
+        issues.append("pad = end ID")
+    if bos is not None and bos == eos:
+        issues.append("start = end ID")
+    if isinstance(eos, list) and len(eos) > 1:
+        issues.append("several end IDs")
+    short = None
+    if not found:
+        short = "No token IDs in config. Check the tokenizer."
+    elif issues:
+        joined = "; ".join(issues)
+        short = f"{joined[0].upper()}{joined[1:]}. Check tokenizer and loss mask."
+    return Item("Special tokens", " ".join(parts), short)
 
 
 def _post_training(
@@ -346,7 +379,8 @@ def _post_training(
         )
     else:
         embeddings = "Input and output weights are separate (untied)."
-    items.append(Item("Embeddings", embeddings))
+    short = "Input/output weights are tied. Check the tie survives save/merge."
+    items.append(Item("Embeddings", embeddings, short if c.tied else None))
     adapters = lora_params(c, lora_rank)
     items.append(
         Item(
@@ -378,6 +412,8 @@ def analyze(
         for key in sorted(view)
         if key not in _CORE_KEYS
     )
+    arch = view.get("architectures")
+    dtype = view.get("torch_dtype") or view.get("dtype")
     return Analysis(
         overview=tuple(_overview(view, c, counts)),
         warnings=tuple(_warnings(view, raw, c)),
@@ -385,4 +421,11 @@ def analyze(
         testing=tuple(_testing(view, c)),
         post_training=tuple(_post_training(view, c, counts, lora_rank)),
         other_settings=other,
+        architecture=(
+            ", ".join(safe_text(a) for a in arch)
+            if isinstance(arch, list) and arch
+            else "architecture not stated"
+        ),
+        dtype=safe_text(dtype) if dtype else None,
+        context=_positive(view.get("max_position_embeddings")),
     )

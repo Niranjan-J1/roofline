@@ -122,3 +122,30 @@ def test_other_settings_are_listed_and_sanitized():
     assert "\x1b" not in other["nasty"] and len(other["long"]) == 70
     assert "hidden_size" not in other
     assert "\x1b" not in texts(run(model_type="\x1b]0;x").overview)["Architecture"]
+
+
+def shorts(items):
+    return {i.title: i.short for i in items if i.short}
+
+
+def test_short_checks_are_only_model_specific():
+    a = run()
+    assert set(shorts(a.testing)) == {"Long inputs"}
+    assert set(shorts(a.post_training)) == {"Special tokens"}
+
+
+def test_short_checks_follow_their_settings():
+    clean = run(pad_token_id=0, eos_token_id=2, bos_token_id=1)
+    assert shorts(clean.post_training) == {}
+    assert "Embeddings" in shorts(run(tie_word_embeddings=True).post_training)
+    changed = run(
+        use_sliding_window=True, rope_scaling={"type": "yarn"}, attention_dropout=0.1
+    )
+    testing = shorts(changed.testing)
+    assert set(testing) == {
+        "Long inputs",
+        "Sliding-window attention",
+        "Position scaling",
+        "Dropout",
+    }
+    assert "up to" in testing["Long inputs"]

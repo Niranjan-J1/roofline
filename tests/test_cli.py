@@ -37,34 +37,76 @@ def test_allows_zero_gpus():
     assert build_parser().parse_args(["m", "--gpus", "0"]).gpus == 0
 
 
-def test_main_prints_breakdown(tmp_path, capsys):
+def run_main(tmp_path, capsys, *flags, **changes):
     path = tmp_path / "config.json"
-    path.write_text(json.dumps(LLAMA_70B))
-    assert main([str(path)]) == 0
-    out = capsys.readouterr().out
-    assert "local file" in out
-    assert "70.55e9" in out
-
-
-def run_main(tmp_path, capsys, *flags):
-    path = tmp_path / "config.json"
-    path.write_text(json.dumps(LLAMA_70B))
+    path.write_text(json.dumps({**LLAMA_70B, **changes}))
     assert main([str(path), *flags]) == 0
     return capsys.readouterr()
 
 
-def test_default_output_is_analysis_only(tmp_path, capsys):
-    out = run_main(tmp_path, capsys).out
+def test_full_view_has_all_sections(tmp_path, capsys):
+    out = run_main(tmp_path, capsys, "--full").out
     for heading in ("Overview", "Parameters", "For testing", "For post-training"):
         assert heading in out
+    assert "70.55e9" in out and "local file" in out
     assert "Memory estimates" not in out
+
+
+def test_default_view_is_short(tmp_path, capsys):
+    out = run_main(tmp_path, capsys).out
+    assert "70.55B" in out and "local file" in out
+    for heading in ("Overview", "For testing", "Other config settings", "Memory ("):
+        assert heading not in out
+    # The first line holds a long temp path, so count from the facts onward.
+    assert len(out[out.index("  Params") :].splitlines()) <= 14
 
 
 @pytest.mark.parametrize(
     "flags", [["--memory"], ["--batch", "1"], ["--seq", "64"], ["--lora-rank", "8"]]
 )
-def test_memory_flags_add_estimates(tmp_path, capsys, flags):
-    assert "Memory estimates" in run_main(tmp_path, capsys, *flags).out
+def test_memory_flags_add_short_estimates(tmp_path, capsys, flags):
+    out = run_main(tmp_path, capsys, *flags).out
+    assert "Memory (batch=" in out and "largest:" in out
+    assert "activations unmeasured" in out
+    assert "adapters + optimizer" not in out  # breakdown is --full only
+
+
+def test_full_memory_shows_breakdown(tmp_path, capsys):
+    out = run_main(tmp_path, capsys, "--full", "--memory").out
+    assert "Memory estimates" in out and "frozen weights" in out
+    assert "Memory assumptions" in out
+
+
+def test_short_view_keeps_every_warning(tmp_path, capsys):
+    out = run_main(
+        tmp_path,
+        capsys,
+        num_experts=8,
+        auto_map={"AutoModel": "x.Y"},
+        quantization_config={"bits": 4},
+        vision_config={"depth": 2},
+        hidden_act="gelu",
+    ).out
+    text = " ".join(out.split())
+    for expected in (
+        "mixture-of-experts",
+        "custom model code",
+        "already quantized",
+        "Multimodal",
+        "Activation is gelu",
+    ):
+        assert expected in text
+
+
+def test_short_view_shows_important_assumptions(tmp_path, capsys):
+    # LLAMA_70B states K and tying, so null them to force both guesses.
+    out = run_main(
+        tmp_path, capsys, num_key_value_heads=None, tie_word_embeddings=None
+    ).out
+    assert "Assumed" in out
+    assert "num_key_value_heads missing" in out
+    assert "tie_word_embeddings missing" in out
+    assert "head_dim missing" not in out
 
 
 @pytest.mark.parametrize("flags", [["--fit"], ["--gpus", "0"], ["--ram", "8"]])
