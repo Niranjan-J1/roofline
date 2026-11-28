@@ -70,16 +70,11 @@ def test_each_warning_is_triggered_by_its_setting():
         "already quantized": {"quantization_config": {"bits": 4}},
         "Multimodal": {"vision_config": {"depth": 2}},
         "Encoder-decoder": {"is_encoder_decoder": True},
-        "Activation is gelu": {"hidden_act": "gelu"},
-        "mixture-of-experts": {"num_local_experts": 8},
+        "Activation is gelu": {"hidden_act": "gelu", "model_type": "other"},
     }
     for expected, change in cases.items():
         warnings = run(**change).warnings
         assert len(warnings) == 1 and expected in warnings[0], expected
-
-
-def test_moe_hides_compute_estimate():
-    assert "Compute per token" not in texts(run(num_experts=8).parameter_details)
 
 
 def test_active_sliding_window():
@@ -149,3 +144,15 @@ def test_short_checks_follow_their_settings():
         "Dropout",
     }
     assert "up to" in testing["Long inputs"]
+
+
+def test_listed_window_is_not_reported_as_on():
+    raw = {k: v for k, v in QWEN_7B.items() if k != "use_sliding_window"}
+    listed = shorts(run(raw, sliding_window=2047).testing)
+    assert "2,047-token sliding window is listed" in listed["Sliding-window attention"]
+    assert "is on" not in listed["Sliding-window attention"]
+    assert "up to" in listed["Long inputs"]
+    # A window as large as the position limit can never take effect.
+    unreachable = shorts(run(raw).testing)
+    assert "Sliding-window attention" not in unreachable
+    assert "up to" not in unreachable["Long inputs"]

@@ -34,7 +34,9 @@ def test_fallbacks_are_applied_and_noted():
     del raw["num_key_value_heads"], raw["tie_word_embeddings"]
     c = parse_config(raw)
     assert (c.K, c.H, c.tied) == (64, 128, False)
-    assert len(c.notes) == 3
+    for expected in ("num_key_value_heads", "head_dim", "tie_word_embeddings"):
+        assert any(expected in note for note in c.notes)
+    assert c.tie_assumed
 
 
 def test_explicit_head_dim_wins():

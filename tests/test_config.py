@@ -51,9 +51,9 @@ def test_nested_text_config():
     assert any("text_config" in n for n in c.notes)
 
 
-def test_moe_warning():
+def test_unrecognized_moe_is_unsupported():
     c = parse_config({**LLAMA_70B, "num_local_experts": 8})
-    assert any("mixture-of-experts" in n for n in c.notes)
+    assert "mixture-of-experts" in c.unsupported
 
 
 def test_json_file_and_directory(tmp_path):

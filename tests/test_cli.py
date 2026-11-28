@@ -82,7 +82,6 @@ def test_short_view_keeps_every_warning(tmp_path, capsys):
     out = run_main(
         tmp_path,
         capsys,
-        num_experts=8,
         auto_map={"AutoModel": "x.Y"},
         quantization_config={"bits": 4},
         vision_config={"depth": 2},
@@ -90,7 +89,6 @@ def test_short_view_keeps_every_warning(tmp_path, capsys):
     ).out
     text = " ".join(out.split())
     for expected in (
-        "mixture-of-experts",
         "custom model code",
         "already quantized",
         "Multimodal",

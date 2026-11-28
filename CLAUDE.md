@@ -14,6 +14,7 @@ is read or downloaded, never weights.
 | `roofline <model>`         | short model analysis, about one screen (the main feature)     |
 | `roofline <model> --full`  | all details                                                   |
 | `roofline <model> --memory`| + memory totals (`--batch`/`--seq`/`--lora-rank` imply it)    |
+| `roofline <model> --verify`| + comparison with HuggingFace's parameter count (online)      |
 | `roofline <model> --fit`   | + memory and detected hardware (fit verdicts not built yet)   |
 
 **Keep the default short** (about 15 lines for a typical model). It shows key facts,
@@ -43,12 +44,37 @@ Config values are untrusted text and must be sanitized before printing.
 
 If a required key is missing, fail with a clear message naming the key — never silently guess.
 
+GPT-2 (`model_type: gpt2`) uses `n_layer`, `n_embd`, `n_head`, `n_inner`, `n_positions`.
+Its family defaults (F = 4·D when `n_inner` is unset; shared weights when unstated) are
+labeled in output. For other models with `tie_word_embeddings` unstated, assume separate,
+and show both totals, saying which one memory uses.
+
 ## Parameter formulas (per the "How to Scale Your Model" scaling book)
 
 - **FFW params**    = 3 · D · F · L          (SwiGLU: gate, up, down)
 - **Attention params** = L · 2 · D · H · (N + K)   ← GQA-aware
 - **Vocab params**   = (1 if tied else 2) · V · D
 - **Total**       = FFW + Attention + Vocab
+
+### Family-specific layouts (chosen by `model_type`, never by activation name)
+
+- **Two-matrix FFW** (`phi`, `gpt_neox`, `gpt2`): 2 · D · F · L. All others use three.
+- **GPT-2** also counts learned position embeddings: n_positions · D.
+- **Mixture of experts** (`mixtral`, `olmoe`, `qwen2_moe`, `qwen3_moe`, `gpt_oss`):
+  per expert layer, experts · 3·D·F_expert + router D·experts, plus for `qwen2_moe` a
+  shared expert 3·D·F_shared + gate D. Qwen layers can be dense (`decoder_sparse_step`,
+  `mlp_only_layers`). Show total and active parameters. Memory weights count all
+  experts; activations use only active ones.
+- **Unsupported** (compressed/latent attention such as DeepSeek, and any other MoE
+  layout): show basic facts, and withhold parameter, weight, compute and memory figures.
+  Never show totals known to be wrong.
+
+**Adding a family** requires a fixture in `tests/fixtures` proving the layout: public
+`config.json` plus a reference count from weight-file headers, with adjustments listed.
+Totals must be within 0.1%. Families without one are labeled "not checked".
+
+`--verify` compares with HuggingFace's count. That count can include buffers, packed or
+quantized data, or a second copy of tied weights, so it never replaces our figure.
 
 ### IMPORTANT: attention must be GQA-aware
 Use `2 · D · H · (N + K)` per layer, NOT `4 · D²`.
@@ -105,6 +131,7 @@ across available GPUs)? Print a clear ✓/✗ per scenario with one line of reas
 - `--json`       machine-readable output
 - `--memory`     add memory estimates
 - `--full`       show all details
+- `--verify`     compare the total with HuggingFace's count
 - `--fit`        add memory, hardware detection and (later) fit verdicts
 - (defaults should let it run with just a model name)
 

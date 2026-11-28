@@ -22,7 +22,8 @@ KV_BYTES = 2  # bf16
 ASSUMPTIONS = (
     "Idealized estimates: framework overhead and temporary buffers are not counted.",
     "Activations are a rough, unmeasured estimate: 2*B*T*L*(5D+3F) bytes, with no "
-    "gradient checkpointing and no stored attention matrix.",
+    "gradient checkpointing and no stored attention matrix. For mixture-of-experts "
+    "models, F counts only the experts used per token; weights count all experts.",
     "Trained parameters use 12 bytes each (weight, gradient, two Adam moments).",
     "LoRA adapters are on the four attention projections (q, k, v, o) only.",
 )
@@ -49,8 +50,17 @@ class Scenario:
         return max(self.components, key=lambda c: c.bytes)
 
 
+def _ffw_width_sum(c: ModelConfig) -> int:
+    """FFW width used per token, summed over layers (only active experts)."""
+    if c.moe is None:
+        return c.L * c.F
+    used = c.moe.active * c.moe.width + c.moe.shared_width
+    return (c.L - c.moe.sparse_layers) * c.F + c.moe.sparse_layers * used
+
+
 def activation_bytes(c: ModelConfig, batch: int, seq: int) -> int:
-    return ACTIVATION_BYTES * batch * seq * c.L * (5 * c.D + 3 * c.F)
+    per_token = 5 * c.D * c.L + 3 * _ffw_width_sum(c)
+    return ACTIVATION_BYTES * batch * seq * per_token
 
 
 def kv_cache_bytes(c: ModelConfig, batch: int, seq: int) -> int:

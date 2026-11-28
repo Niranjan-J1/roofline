@@ -22,7 +22,7 @@ def load(path):
 
 
 def test_fixtures_exist():
-    assert len(FIXTURES) >= 6
+    assert len(FIXTURES) >= 14
 
 
 @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)

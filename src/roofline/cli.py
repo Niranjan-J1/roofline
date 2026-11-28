@@ -13,12 +13,15 @@ from roofline.insights import analyze
 from roofline.memory import memory_scenarios
 from roofline.params import count_params
 from roofline.report import (
+    WITHHELD_MEMORY,
     render_analysis,
     render_hardware,
     render_memory,
     render_short,
     render_short_memory,
+    render_verify,
 )
+from roofline.verify import verify_count
 
 DEFAULT_BATCH, DEFAULT_SEQ, DEFAULT_LORA_RANK = 1, 4096, 16
 
@@ -113,6 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="system RAM per node; implies --fit",
     )
 
+    p.add_argument(
+        "--verify",
+        action="store_true",
+        help="compare the total with HuggingFace's count (extra online lookup)",
+    )
     p.add_argument("--json", action="store_true", help="JSON output (not available yet)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p
@@ -128,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as e:
         print(f"roofline: error: {e}", file=sys.stderr)
         return 1
-    counts = count_params(cfg)
+    counts = None if cfg.unsupported else count_params(cfg)
 
     workload = (args.batch, args.seq, args.lora_rank)
     overrides = (args.gpus, args.vram, args.ram)
@@ -145,10 +153,15 @@ def main(argv: list[str] | None = None) -> int:
         print(render_analysis(args.model, source, path, cfg, counts, analysis))
     else:
         print(render_short(args.model, source, cfg, counts, analysis))
-    if show_memory:
+    if show_memory and counts is None:
+        print(f"\n{WITHHELD_MEMORY}")
+    elif show_memory:
         render = render_memory if args.full else render_short_memory
         print()
         print(render(memory_scenarios(cfg, batch, seq, rank), batch, seq, rank))
+    if args.verify:
+        print()
+        print(render_verify(verify_count(args.model, source, raw, cfg, counts)))
     if show_hardware:
         hardware = detect_hardware(args.gpus, args.vram, args.ram)
         print()

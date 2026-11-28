@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from roofline.config import MOE_KEYS, ModelConfig, dimension_source
+from roofline.config import CHECKED_FAMILIES, ModelConfig, dimension_source
 from roofline.memory import kv_cache_bytes, lora_params
 from roofline.params import ParamCounts
 
@@ -24,7 +24,17 @@ _CORE_KEYS = (
     "vocab_size",
     "tie_word_embeddings",
     "text_config",
+    "n_layer",
+    "n_embd",
+    "n_head",
 )
+
+# GPT-2 names for settings the analysis reads.
+_GPT2_ALIASES = {
+    "max_position_embeddings": "n_positions",
+    "attention_dropout": "attn_pdrop",
+    "hidden_act": "activation_function",
+}
 
 # Activations that commonly go with the three-matrix gated FFW we assume.
 _EXPECTED_ACTIVATIONS = ("silu", "swish")
@@ -76,10 +86,6 @@ def _millions(n: float) -> str:
     return f"{n / 1e9:.2f}B" if n >= 1e9 else f"{n / 1e6:.2f}M"
 
 
-def _is_moe(view: dict) -> bool:
-    return any(view.get(key) for key in MOE_KEYS)
-
-
 def _sliding_window(view: dict, layers: int) -> tuple[str, str] | None:
     """Return (state, description), or None if the config says nothing."""
     layer_types = view.get("layer_types")
@@ -91,13 +97,30 @@ def _sliding_window(view: dict, layers: int) -> tuple[str, str] | None:
     if enabled is False:
         unused = " The window size is listed but unused." if window else ""
         return "off", f"off.{unused}"
-    if window:
+    if window and enabled:
         return "on", (
             f"window of {window:,} tokens; check whether it applies to all layers"
+        )
+    if window:
+        return "listed", (
+            f"a window of {window:,} tokens is listed, with no on/off setting; check "
+            "whether your code applies it"
         )
     if enabled:
         return "on", "enabled, but no window size was found"
     return None
+
+
+def _window_may_apply(
+    view: dict, window: tuple[str, str] | None, limit: int | None
+) -> bool:
+    """False if there is no window, it is off, or it can never be reached."""
+    if not window or window[0] == "off":
+        return False
+    if window[0] == "listed":
+        size = _positive(view.get("sliding_window"))
+        return not (size and limit and size >= limit)
+    return True
 
 
 def _rope_scaling(view: dict) -> str | None:
@@ -115,7 +138,7 @@ def _rope_scaling(view: dict) -> str | None:
     return None
 
 
-def _overview(view: dict, c: ModelConfig, counts: ParamCounts) -> list[Item]:
+def _overview(view: dict, c: ModelConfig, counts: ParamCounts | None) -> list[Item]:
     items = []
     arch = view.get("architectures")
     if isinstance(arch, list) and arch:
@@ -124,24 +147,31 @@ def _overview(view: dict, c: ModelConfig, counts: ParamCounts) -> list[Item]:
         name = "not stated"
     family = safe_text(view["model_type"]) if view.get("model_type") else "not stated"
     items.append(Item("Architecture", f"{name} (model type: {family})"))
-    items.append(
-        Item(
-            "Size",
-            f"{_millions(counts.total)} parameters (formula estimate), "
-            f"{c.L} layers, hidden size {c.D:,}",
-        )
-    )
-    if c.K == c.N:
-        attention = f"multi-head, {c.N} heads of size {c.H}"
+    shape = f"{c.L} layers, hidden size {c.D:,}"
+    if counts is None:
+        items.append(Item("Size", f"{shape} (parameter count withheld)"))
     else:
-        kind = "multi-query" if c.K == 1 else "grouped-query"
-        attention = (
-            f"{kind}, {c.N} query heads of size {c.H} share {c.K} key/value heads"
-        )
-    items.append(Item("Attention", attention))
-    items.append(
-        Item("Feed-forward", f"{c.F:,} wide ({c.F / c.D:.2f}x hidden size)")
-    )
+        total = f"{_millions(counts.total)} parameters (formula estimate)"
+        items.append(Item("Size", f"{total}, {shape}"))
+        if c.K == c.N:
+            attention = f"multi-head, {c.N} heads of size {c.H}"
+        else:
+            kind = "multi-query" if c.K == 1 else "grouped-query"
+            attention = (
+                f"{kind}, {c.N} query heads of size {c.H} share {c.K} key/value heads"
+            )
+        items.append(Item("Attention", attention))
+        if c.moe:
+            m = c.moe
+            forward = (
+                f"mixture of experts: {m.experts} experts of width {m.width:,}, "
+                f"{m.active} active per token, in {m.sparse_layers} of {c.L} layers"
+            )
+            if m.shared_width:
+                forward += f", plus a shared expert of width {m.shared_width:,}"
+        else:
+            forward = f"{c.F:,} wide ({c.F / c.D:.2f}x hidden size)"
+        items.append(Item("Feed-forward", forward))
     dtype = view.get("torch_dtype") or view.get("dtype")
     items.append(
         Item("Saved precision", safe_text(dtype) if dtype else "not stated")
@@ -154,7 +184,12 @@ def _overview(view: dict, c: ModelConfig, counts: ParamCounts) -> list[Item]:
 
 
 def _warnings(view: dict, raw: dict, c: ModelConfig) -> list[str]:
-    out = [n.removeprefix("WARNING: ") for n in c.notes if n.startswith("WARNING")]
+    out = []
+    if c.unsupported:
+        out.append(
+            f"{c.unsupported}. roofline cannot count this layout, so parameter, "
+            "weight, compute and memory figures are withheld."
+        )
     if view.get("auto_map") or raw.get("auto_map"):
         out.append(
             "The config points to custom model code. Loading it may need "
@@ -162,9 +197,9 @@ def _warnings(view: dict, raw: dict, c: ModelConfig) -> list[str]:
         )
     if view.get("quantization_config") or raw.get("quantization_config"):
         out.append(
-            "The model is already quantized (see quantization_config). Storage "
-            "figures below do not describe these weights, and finetuning options "
-            "depend on the method."
+            "The model is already quantized (see quantization_config). Any storage "
+            "or memory figures shown do not describe these weights, and finetuning "
+            "options depend on the method."
         )
     extra = [k for k in ("vision_config", "audio_config") if raw.get(k) or view.get(k)]
     if extra:
@@ -177,7 +212,9 @@ def _warnings(view: dict, raw: dict, c: ModelConfig) -> list[str]:
             "Encoder-decoder model: the formulas count only one stack of layers."
         )
     act = view.get("hidden_act") or view.get("hidden_activation")
-    if act and act not in _EXPECTED_ACTIVATIONS:
+    # For checked families the FFW layout is known, whatever the activation.
+    checked = c.unsupported or c.family in CHECKED_FAMILIES
+    if act and act not in _EXPECTED_ACTIVATIONS and not checked:
         out.append(
             f"Activation is {safe_text(act)}. The FFW formula assumes three matrices "
             "per layer (gated, as in SwiGLU); check that this model matches."
@@ -185,16 +222,35 @@ def _warnings(view: dict, raw: dict, c: ModelConfig) -> list[str]:
     return out
 
 
-def _parameter_details(
-    view: dict, c: ModelConfig, counts: ParamCounts
-) -> list[Item]:
+def _parameter_details(c: ModelConfig, counts: ParamCounts) -> list[Item]:
+    mixed = c.moe is not None and c.moe.sparse_layers < c.L
     items = [
         Item(
             "Per layer",
             f"{(counts.ffw + counts.attention) // c.L:,} "
-            f"(FFW {counts.ffw // c.L:,}, attention {counts.attention // c.L:,})",
+            f"(FFW {counts.ffw // c.L:,}, attention {counts.attention // c.L:,})"
+            + (", averaged over dense and expert layers" if mixed else ""),
         )
     ]
+    if c.ffw_matrices == 2:
+        items.append(
+            Item(
+                "FFW layout",
+                f"two matrices (2 * D * F per layer), as in the {c.family} family",
+            )
+        )
+    if c.moe:
+        items.append(
+            Item(
+                "Experts",
+                f"{_millions(counts.total)} parameters in total (all held in memory), "
+                f"{_millions(counts.active_total)} active per token; includes routers",
+            )
+        )
+    if c.positions:
+        items.append(
+            Item("Positions", f"{c.positions:,} learned position embeddings")
+        )
     matrix = c.V * c.D
     items.append(
         Item(
@@ -223,18 +279,18 @@ def _parameter_details(
             "layers kept at higher precision are not counted)",
         )
     )
-    if not _is_moe(view):
-        # The input embedding is a lookup, so only the output head multiplies.
-        matmul = counts.ffw + counts.attention + c.V * c.D
-        items.append(
-            Item(
-                "Compute per token",
-                f"about {2 * matmul / 1e9:,.2f} GFLOPs forward and "
-                f"{6 * matmul / 1e9:,.2f} GFLOPs forward + backward (rough, matrix "
-                "weights only; attention-score work, which grows with sequence "
-                "length, is not counted)",
-            )
+    # Embeddings are lookups, so only the output head multiplies. With experts,
+    # only the active ones do work.
+    matmul = counts.ffw_active + counts.attention + c.V * c.D
+    items.append(
+        Item(
+            "Compute per token",
+            f"about {2 * matmul / 1e9:,.2f} GFLOPs forward and "
+            f"{6 * matmul / 1e9:,.2f} GFLOPs forward + backward (rough, matrix "
+            "weights only; attention-score work, which grows with sequence "
+            "length, is not counted)",
         )
+    )
     items.append(
         Item("Not counted", "bias and normalization parameters in the totals above")
     )
@@ -253,31 +309,34 @@ def _testing(view: dict, c: ModelConfig) -> list[Item]:
             f"{limit:,}-token position limit"
         )
     text += "."
-    if window and window[0] == "on":
-        text += " This assumes every token is cached; sliding-window layers may keep fewer."
+    limited = _window_may_apply(view, window, limit)
+    if limited:
+        text += (
+            " This assumes every token is cached; sliding-window layers may keep fewer."
+        )
     text += (
         " Test quality at your target lengths; a position limit does not show how "
         "well the model performs there."
     )
     short = None
     if limit:
-        bound = "up to " if window and window[0] == "on" else ""
+        bound = "up to " if limited else ""
         short = (
             f"KV cache at full context: {bound}{per_token * limit / 1e9:,.2f} GB "
             "per sequence (bf16)."
         )
-    items.append(Item("Long inputs", text, short))
+    if not c.unsupported:
+        items.append(Item("Long inputs", text, short))
     if window:
         advice = (
-            " Include inputs longer than the window in your tests."
-            if window[0] == "on"
-            else ""
+            " Include inputs longer than the window in your tests." if limited else ""
         )
-        short = (
-            "Sliding-window attention is on. Test inputs longer than the window."
-            if window[0] == "on"
-            else None
-        )
+        short = None
+        if limited and window[0] == "on":
+            short = "Sliding-window attention is on. Test inputs longer than the window."
+        elif limited:
+            size = _positive(view.get("sliding_window"))
+            short = f"A {size:,}-token sliding window is listed: check it applies."
         items.append(
             Item("Sliding-window attention", f"{window[1].rstrip('.')}.{advice}", short)
         )
@@ -352,7 +411,7 @@ def _token_item(view: dict) -> Item:
 
 
 def _post_training(
-    view: dict, c: ModelConfig, counts: ParamCounts, lora_rank: int
+    view: dict, c: ModelConfig, counts: ParamCounts | None, lora_rank: int
 ) -> list[Item]:
     items = [_token_item(view)]
     items.append(
@@ -362,13 +421,12 @@ def _post_training(
             "tokenizer's token count. Check both before adding tokens or resizing.",
         )
     )
-    assumed = any("tie_word_embeddings missing" in n for n in c.notes)
     if c.tied:
         embeddings = (
             "Input and output weights are shared (tied). Training or resizing one "
             "affects both; check the tie survives saving and merging."
         )
-    elif assumed:
+    elif c.tie_assumed:
         embeddings = (
             "The config does not say whether input and output weights are shared. "
             "Untied is assumed; check the loaded model."
@@ -377,15 +435,16 @@ def _post_training(
         embeddings = "Input and output weights are separate (untied)."
     short = "Input/output weights are tied. Check the tie survives save/merge."
     items.append(Item("Embeddings", embeddings, short if c.tied else None))
-    adapters = lora_params(c, lora_rank)
-    items.append(
-        Item(
-            "LoRA size",
-            f"Rank {lora_rank} adapters on q, k, v and o would add "
-            f"{_millions(adapters)} parameters "
-            f"({100 * adapters / counts.total:.2f}% of the base model).",
+    if counts is not None:
+        adapters = lora_params(c, lora_rank)
+        items.append(
+            Item(
+                "LoRA size",
+                f"Rank {lora_rank} adapters on q, k, v and o would add "
+                f"{_millions(adapters)} parameters "
+                f"({100 * adapters / counts.total:.2f}% of the base model).",
+            )
         )
-    )
     if view.get("use_cache") is True:
         items.append(
             Item(
@@ -398,8 +457,9 @@ def _post_training(
 
 
 def analyze(
-    raw: dict, c: ModelConfig, counts: ParamCounts, lora_rank: int = 16
+    raw: dict, c: ModelConfig, counts: ParamCounts | None, lora_rank: int = 16
 ) -> Analysis:
+    """`counts` is None when the model's layout cannot be counted."""
     view = dimension_source(raw)
     if view is not raw:
         view = {**raw, **view}
@@ -408,12 +468,17 @@ def analyze(
         for key in sorted(view)
         if key not in _CORE_KEYS
     )
+    if c.family == "gpt2":
+        aliases = {new: view[old] for new, old in _GPT2_ALIASES.items() if old in view}
+        view = {**aliases, **view}
     arch = view.get("architectures")
     dtype = view.get("torch_dtype") or view.get("dtype")
     return Analysis(
         overview=tuple(_overview(view, c, counts)),
         warnings=tuple(_warnings(view, raw, c)),
-        parameter_details=tuple(_parameter_details(view, c, counts)),
+        parameter_details=(
+            tuple(_parameter_details(c, counts)) if counts is not None else ()
+        ),
         testing=tuple(_testing(view, c)),
         post_training=tuple(_post_training(view, c, counts, lora_rank)),
         other_settings=other,

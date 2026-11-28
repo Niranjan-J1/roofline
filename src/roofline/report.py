@@ -15,8 +15,18 @@ from roofline.params import ParamCounts
 WIDTH = 88
 SHORT_WIDTH = 80
 
+WITHHELD_MEMORY = (
+    "Memory estimates withheld: roofline cannot count this model's parameters."
+)
+
 # Config assumptions that affect the numbers or their scope, so always shown.
-_IMPORTANT_NOTES = ("num_key_value_heads missing", "tie_word_embeddings missing", "text_config")
+_IMPORTANT_NOTES = (
+    "num_key_value_heads missing",
+    "tie_word_embeddings",
+    "family default",
+    "has not been checked",
+    "text_config",
+)
 
 
 def _wrap(text: str, first: str, rest: str, width: int = WIDTH) -> str:
@@ -38,8 +48,23 @@ def _checks(items: tuple[Item, ...]) -> list[str]:
     return [_wrap(f"{i.title}: {i.text}", "  - ", "    ") for i in items]
 
 
+def _count(n: int) -> str:
+    return f"{n / 1e9:.2f}B" if n >= 1e9 else f"{n / 1e6:.2f}M"
+
+
+def _notes(c: ModelConfig, counts: ParamCounts | None) -> list[str]:
+    """Config notes; an unstated shared-weight setting shows both totals."""
+    if not (c.tie_assumed and counts):
+        return list(c.notes)
+    both = (
+        f"tie_word_embeddings missing: {_count(counts.total)} parameters if separate "
+        f"(used here, including memory), {_count(counts.total - c.V * c.D)} if shared"
+    )
+    return [both if "tie_word_embeddings" in n else n for n in c.notes]
+
+
 def render_short(
-    model: str, source: str, c: ModelConfig, counts: ParamCounts, a: Analysis
+    model: str, source: str, c: ModelConfig, counts: ParamCounts | None, a: Analysis
 ) -> str:
     """The default view: about one screen. Warnings are never dropped."""
 
@@ -47,39 +72,79 @@ def render_short(
         return _wrap(text, first, rest, SHORT_WIDTH)
 
     kind = f"{a.architecture}, {a.dtype}" if a.dtype else a.architecture
-    total = counts.total
-    params = (
-        f"{total / 1e9:.2f}B" if total >= 1e9 else f"{total / 1e6:.2f}M"
+    context = (
+        "Context",
+        f"{a.context:,} position limit" if a.context else "not found",
     )
-    split = (
-        f"FFW {100 * counts.ffw / total:.0f}%, "
-        f"attention {100 * counts.attention / total:.0f}%, "
-        f"vocab {100 * counts.vocab / total:.0f}%"
-    )
-    if c.K == c.N:
-        attention = f"multi-head: {c.N} heads, head size {c.H}"
+    if counts is None:
+        facts = [
+            ("Params", "withheld (see warnings)"),
+            ("Shape", f"{c.L} layers, hidden {c.D:,}, {c.N} attention heads"),
+            ("Vocab", f"{c.V:,} slots"),
+            context,
+        ]
     else:
-        name = "multi-query" if c.K == 1 else "grouped-query"
-        attention = f"{name}: {c.N} query / {c.K} KV heads, head size {c.H}"
-    storage = " | ".join(
-        f"{label} {total * size / 1e9:,.1f} GB"
-        for label, size in (("bf16", 2), ("int8", 1), ("4-bit", 0.5))
-    )
-    facts = (
-        ("Params", f"{params} ({split})"),
-        ("Shape", f"{c.L} layers, hidden {c.D:,}, FFW {c.F:,}"),
-        ("Attention", attention),
-        ("Context", f"{a.context:,} position limit" if a.context else "not found"),
-        ("Weights", storage),
-    )
+        total = counts.total
+        parts = [
+            ("FFW", counts.ffw),
+            ("attention", counts.attention),
+            ("vocab", counts.vocab),
+        ]
+        if counts.position:
+            parts.append(("positions", counts.position))
+        split = ", ".join(f"{name} {100 * n / total:.0f}%" for name, n in parts)
+        if c.K == c.N:
+            attention = f"multi-head: {c.N} heads, head size {c.H}"
+        else:
+            name = "multi-query" if c.K == 1 else "grouped-query"
+            attention = f"{name}: {c.N} query / {c.K} KV heads, head size {c.H}"
+        storage = " | ".join(
+            f"{label} {total * size / 1e9:,.1f} GB"
+            for label, size in (("bf16", 2), ("int8", 1), ("4-bit", 0.5))
+        )
+        width = f"expert FFW {c.moe.width:,}" if c.moe else f"FFW {c.F:,}"
+        facts = [
+            ("Params", f"{_count(total)} ({split})"),
+            ("Shape", f"{c.L} layers, hidden {c.D:,}, {width}"),
+            ("Attention", attention),
+            context,
+            ("Weights", storage),
+        ]
+        if c.moe:
+            experts = (
+                f"{c.moe.experts} per layer, {c.moe.active} active; "
+                f"{_count(counts.active_total)} parameters active per token"
+            )
+            if c.moe.sparse_layers < c.L:
+                experts += f"; {c.moe.sparse_layers} of {c.L} layers use experts"
+            facts.insert(1, ("Experts", experts))
 
-    lines = [wrap(f"{model}   {kind}   (config: {source})", "", "  "), ""]
+    header = f"{model}   {kind}   (config: {source})"
+    if len(header) > SHORT_WIDTH:
+        head = [wrap(f"{model}   {kind}", "", "  "), f"  (config: {source})"]
+    else:
+        head = [header]
+    lines = [*head, ""]
     lines += [wrap(text, f"  {label:<11}", " " * 13) for label, text in facts]
 
     if a.warnings:
         lines += ["", "Warnings"]
         lines += [wrap(w, "  ! ", "    ") for w in a.warnings]
-    notes = [n for n in c.notes if any(key in n for key in _IMPORTANT_NOTES)]
+    notes = [
+        n for n in _notes(c, counts) if any(key in n for key in _IMPORTANT_NOTES)
+    ]
+    if counts is None:  # head and FFW assumptions have nothing to apply to
+        notes = [n for n in notes if "text_config" in n]
+    # Defaults with the same prefix share one entry to keep the view short.
+    merged: dict[str, list[str]] = {}
+    for note in notes:
+        prefix, found, value = note.partition("family default: ")
+        merged.setdefault(prefix + found if found else note, []).append(value)
+    notes = [
+        key.replace("default: ", "defaults: " if len(values) > 1 else "default: ")
+        + "; ".join(values)
+        for key, values in merged.items()
+    ]
     if notes:
         lines += ["", "Assumed"]
         lines += [wrap(n, "  ? ", "    ") for n in notes]
@@ -121,7 +186,7 @@ def render_analysis(
     source: str,
     path: Path,
     c: ModelConfig,
-    counts: ParamCounts,
+    counts: ParamCounts | None,
     a: Analysis,
 ) -> str:
     lines = [
@@ -135,27 +200,34 @@ def render_analysis(
     if a.warnings:
         lines += ["", "Warnings"]
         lines += [_wrap(w, "  ! ", "    ") for w in a.warnings]
+    dimensions = f"  L={c.L}  D={c.D}  F={c.F}  N={c.N}  K={c.K}  H={c.H}  V={c.V}"
+    if counts is None:
+        dimensions = f"  L={c.L}  D={c.D}  N={c.N}  V={c.V}"
     lines += [
         "",
         "Dimensions",
-        f"  L={c.L}  D={c.D}  F={c.F}  N={c.N}  K={c.K}  H={c.H}  V={c.V}",
+        dimensions,
         f"  tied embeddings: {'yes' if c.tied else 'no'}",
     ]
-    lines += [
-        _wrap(n, "  note: ", "        ")
-        for n in c.notes
-        if not n.startswith("WARNING")
-    ]
-    lines += ["", "Parameters"]
-    for label, n in (
-        ("FFW", counts.ffw),
-        ("Attention", counts.attention),
-        ("Vocab", counts.vocab),
-        ("Total", counts.total),
-    ):
-        share = 100 * n / counts.total
-        lines.append(f"  {label:<10} {n:>18,}  {n / 1e9:8.2f}e9  {share:5.1f}%")
-    lines += ["", *_labelled(a.parameter_details)]
+    # With figures withheld, head and FFW assumptions have nothing to apply to.
+    notes = _notes(c, counts)
+    if counts is None:
+        notes = [n for n in notes if "text_config" in n or "tie_word" in n]
+    lines += [_wrap(n, "  note: ", "        ") for n in notes]
+    if counts is not None:
+        lines += ["", "Parameters"]
+        rows = [
+            ("FFW", counts.ffw),
+            ("Attention", counts.attention),
+            ("Vocab", counts.vocab),
+        ]
+        if counts.position:
+            rows.append(("Positions", counts.position))
+        rows.append(("Total", counts.total))
+        for label, n in rows:
+            share = 100 * n / counts.total
+            lines.append(f"  {label:<10} {n:>18,}  {n / 1e9:8.2f}e9  {share:5.1f}%")
+        lines += ["", *_labelled(a.parameter_details)]
     lines += ["", "For testing", *_checks(a.testing)]
     lines += ["", "For post-training", *_checks(a.post_training)]
     if a.other_settings:
@@ -273,3 +345,10 @@ def render_hardware(h: Hardware, full: bool) -> str:
         lines.append(_wrap(SCOPE_NOTE, "  ", "  ", SHORT_WIDTH))
     lines.append("Fit verdicts are not available yet.")
     return "\n".join(lines)
+
+
+def render_verify(lines: tuple[str, ...]) -> str:
+    return "\n".join(
+        ["HuggingFace check (--verify)"]
+        + [_wrap(line, "  ", "  ", SHORT_WIDTH) for line in lines]
+    )
